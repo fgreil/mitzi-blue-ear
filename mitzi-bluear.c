@@ -1,7 +1,7 @@
 // BluEar - Flipper Zero app for firmware 1.4.1
 // Monitors BLE connections passively using available APIs
 
-#include <furi.h> // Flipper Universal Registry Implementation = Core OS functionality
+#include <furi.h>
 #include <furi_hal.h>
 #include <gui/gui.h>
 #include <gui/icon.h>
@@ -10,7 +10,6 @@
 #include <gui/view_dispatcher.h>
 #include <input/input.h>
 #include <furi_hal_bt.h>
-#include <notification/notification_messages.h>
 
 #define MAX_LOG_ENTRIES 50
 
@@ -24,7 +23,6 @@ typedef enum {
 
 typedef struct {
     char message[64];
-    uint32_t timestamp;
 } LogEntry;
 
 // Main application structure
@@ -32,23 +30,21 @@ typedef struct {
     View* view_splash;
     View* view_listen;
     ViewDispatcher* view_dispatcher;
-    NotificationApp* notifications;
     FuriTimer* update_timer;
     FuriMutex* mutex;
     
     LogEntry logs[MAX_LOG_ENTRIES];
     uint8_t log_count;
-    uint8_t scroll_offset;
     
-    bool monitoring;
     uint32_t start_time;
     uint8_t connection_count;
+    ViewId current_view;
 } BluEar;
 
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
-static void log_entry(BluEar* bluear, const char* message) { // Add log entry
+static void log_entry(BluEar* bluear, const char* message) {
     furi_mutex_acquire(bluear->mutex, FuriWaitForever);
     
     if(bluear->log_count < MAX_LOG_ENTRIES) {
@@ -57,8 +53,6 @@ static void log_entry(BluEar* bluear, const char* message) { // Add log entry
             sizeof(bluear->logs[bluear->log_count].message),
             "%s",
             message);
-        bluear->logs[bluear->log_count].timestamp = 
-            furi_get_tick() - bluear->start_time;
         bluear->log_count++;
     } else {
         // Shift logs up
@@ -70,14 +64,12 @@ static void log_entry(BluEar* bluear, const char* message) { // Add log entry
             sizeof(bluear->logs[MAX_LOG_ENTRIES - 1].message),
             "%s",
             message);
-        bluear->logs[MAX_LOG_ENTRIES - 1].timestamp = 
-            furi_get_tick() - bluear->start_time;
     }
     
     furi_mutex_release(bluear->mutex);
 }
 
-static void timer_tick(void* context) { // Timer callback to check BLE status
+static void timer_tick(void* context) {
     BluEar* bluear = context;
     
     // Check if BLE is active (connected or advertising)
@@ -88,15 +80,11 @@ static void timer_tick(void* context) { // Timer callback to check BLE status
     if(is_active && !was_active) {
         bluear->connection_count++;
         log_entry(bluear, "BLE Activity Detected");
-        notification_message(bluear->notifications, &sequence_blink_cyan_10);
     } else if(!is_active && was_active) {
         log_entry(bluear, "BLE Activity Ended");
     }
     
     was_active = is_active;
-    
-    // Trigger view update
-    view_commit_model(bluear->view_listen, true);
 }
 
 // =============================================================================
@@ -106,41 +94,19 @@ static void render_screen_splash(Canvas* canvas, void* context) {
     UNUSED(context);
     
     canvas_clear(canvas);
-	canvas_draw_icon(canvas, 48, 0, &I_splash);
-    canvas_set_font(canvas, FontPrimary);
-    
-    // Center the title
-    canvas_draw_str_aligned(canvas, 64, 15, AlignCenter, AlignCenter, "BluEar");
-    canvas_draw_str_aligned(canvas, 64, 27, AlignCenter, AlignCenter, "BLE Monitor");
-    
-    // Draw icon or decoration (simple BLE symbol representation)
-    canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str_aligned(canvas, 64, 42, AlignCenter, AlignCenter, "v1.0");
-    
-    // Draw instruction
-    canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str_aligned(canvas, 64, 55, AlignCenter, AlignCenter, "Passive BLE Activity Logger");
-    
-    // Draw button hint at bottom
-    elements_button_center(canvas, "Start");
-}
+    canvas_draw_icon(canvas, 48, 0, &I_splash);
+    canvas_set_font(canvas, FontPrimary);   
+    canvas_draw_str_aligned(canvas, 1, 1, AlignLeft, AlignTop, "BluEar");
 
-// Splash screen input callback
-static bool handle_input_screen_splash(InputEvent* event, void* context) {
-    BluEar* bluear = context;
-    bool consumed = false;
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str_aligned(canvas, 1, 10, AlignLeft, AlignTop, "A passive");
+	canvas_draw_str_aligned(canvas, 1, 20, AlignLeft, AlignTop, "BLE listener");
+    canvas_draw_str_aligned(canvas, 1, 49, AlignLeft, AlignTop, "Hold 'back'");
+    canvas_draw_str_aligned(canvas, 1, 57, AlignLeft, AlignTop, "to exit.");
+    canvas_draw_str_aligned(canvas, 110, 1, AlignLeft, AlignTop, "v0.1");
     
-    if(event->type == InputTypeShort) {
-        if(event->key == InputKeyOk) {
-            // Switch to listen view
-            view_dispatcher_switch_to_view(bluear->view_dispatcher, ScreenListen);
-            consumed = true;
-        } else if(event->key == InputKeyBack) {
-            consumed = false; // Let system handle back to exit
-        }
-    }
     
-    return consumed;
+    elements_button_center(canvas, "Start");
 }
 
 // =============================================================================
@@ -151,9 +117,7 @@ static void render_screen_listen(Canvas* canvas, void* context) {
     
     furi_mutex_acquire(bluear->mutex, FuriWaitForever);
     
-    canvas_clear(canvas);
-	canvas_draw_icon(canvas, 1, 1, &I_icon_10x10);
-    
+    canvas_clear(canvas);    
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 12, 10, "BluEar");
     
@@ -166,117 +130,61 @@ static void render_screen_listen(Canvas* canvas, void* context) {
     canvas_draw_str(canvas, 2, 20, status_str);
     
     // Draw monitoring status
-    canvas_draw_str(canvas, 2, 30, bluear->monitoring ? "Status: Monitoring" : "Status: Paused");
+    canvas_draw_str(canvas, 2, 30, "Status: Monitoring");
     
     // Draw separator
     canvas_draw_line(canvas, 0, 32, 128, 32);
     
-    // Draw log entries
+    // Draw last 3 log entries
     canvas_set_font(canvas, FontSecondary);
     uint8_t y = 42;
     uint8_t visible_lines = 3;
     
     if(bluear->log_count > 0) {
         uint8_t start_idx = bluear->log_count > visible_lines ? 
-                           bluear->log_count - visible_lines - bluear->scroll_offset : 0;
-        uint8_t end_idx = bluear->log_count;
+                           bluear->log_count - visible_lines : 0;
         
-        if(start_idx + visible_lines < end_idx) {
-            end_idx = start_idx + visible_lines;
-        }
-        
-        for(uint8_t i = start_idx; i < end_idx; i++) {
-            char line[48];
-            uint32_t sec = bluear->logs[i].timestamp / 1000;
-            snprintf(line, sizeof(line), "[%02lu:%02lu] %s", 
-                     sec / 60, sec % 60, bluear->logs[i].message);
-            canvas_draw_str(canvas, 2, y, line);
+        for(uint8_t i = start_idx; i < bluear->log_count; i++) {
+            canvas_draw_str(canvas, 2, y, bluear->logs[i].message);
             y += 10;
         }
     } else {
         canvas_draw_str(canvas, 2, y, "No events logged yet...");
     }
     
-    // Draw controls
-    elements_button_center(canvas, bluear->monitoring ? "Pause" : "Start");
-    if(bluear->log_count > visible_lines) {
-        elements_button_left(canvas, "Up");
-        elements_button_right(canvas, "Down");
-    }
-    
     furi_mutex_release(bluear->mutex);
 }
 
-// Listen screen input callback
-static bool handle_input_screen_listen(InputEvent* event, void* context) {
+// =============================================================================
+// Unified Input Handler
+// =============================================================================
+static bool handle_input(InputEvent* event, void* context) {
     BluEar* bluear = context;
     bool consumed = false;
     
-    if(event->type == InputTypeShort) {
-        consumed = true;
-        
-        switch(event->key) {
-        case InputKeyOk:
-            // Toggle monitoring
-            furi_mutex_acquire(bluear->mutex, FuriWaitForever);
-            bluear->monitoring = !bluear->monitoring;
-            
-            if(bluear->monitoring) {
-                bluear->start_time = furi_get_tick();
-                bluear->log_count = 0;
-                bluear->scroll_offset = 0;
-                bluear->connection_count = 0;
-                log_entry(bluear, "Monitoring started");
-                furi_timer_start(bluear->update_timer, 500);
-            } else {
-                furi_timer_stop(bluear->update_timer);
-                log_entry(bluear, "Monitoring paused");
+    if(event->type == InputTypeShort || event->type == InputTypeLong) {
+        if(bluear->current_view == ScreenSplash) {
+            // Splash screen input
+            if(event->key == InputKeyOk && event->type == InputTypeShort) {
+                bluear->current_view = ScreenListen;
+                view_dispatcher_switch_to_view(bluear->view_dispatcher, ScreenListen);
+                consumed = true;
+            } else if(event->key == InputKeyBack && event->type == InputTypeLong) {
+                view_dispatcher_stop(bluear->view_dispatcher);
+                consumed = true;
             }
-            furi_mutex_release(bluear->mutex);
-            break;
-            
-        case InputKeyUp:
-            // Scroll up in logs
-            furi_mutex_acquire(bluear->mutex, FuriWaitForever);
-            if(bluear->scroll_offset < bluear->log_count - 3) {
-                bluear->scroll_offset++;
+        } else if(bluear->current_view == ScreenListen) {
+            // Listen screen input
+            if(event->key == InputKeyBack) {
+                if(event->type == InputTypeShort) {
+                    bluear->current_view = ScreenSplash;
+                    view_dispatcher_switch_to_view(bluear->view_dispatcher, ScreenSplash);
+                    consumed = true;
+                } else if(event->type == InputTypeLong) {
+                    view_dispatcher_stop(bluear->view_dispatcher);
+                    consumed = true;
+                }
             }
-            furi_mutex_release(bluear->mutex);
-            break;
-            
-        case InputKeyDown:
-            // Scroll down in logs
-            furi_mutex_acquire(bluear->mutex, FuriWaitForever);
-            if(bluear->scroll_offset > 0) {
-                bluear->scroll_offset--;
-            }
-            furi_mutex_release(bluear->mutex);
-            break;
-            
-        case InputKeyLeft:
-            // Scroll up (same as up key)
-            furi_mutex_acquire(bluear->mutex, FuriWaitForever);
-            if(bluear->scroll_offset < bluear->log_count - 3) {
-                bluear->scroll_offset++;
-            }
-            furi_mutex_release(bluear->mutex);
-            break;
-            
-        case InputKeyRight:
-            // Scroll down (same as down key)
-            furi_mutex_acquire(bluear->mutex, FuriWaitForever);
-            if(bluear->scroll_offset > 0) {
-                bluear->scroll_offset--;
-            }
-            furi_mutex_release(bluear->mutex);
-            break;
-            
-        case InputKeyBack:
-            consumed = false; // Let system handle back
-            break;
-            
-        default:
-            break;
         }
     }
     
@@ -291,27 +199,25 @@ static BluEar* bluear_create() {
     
     bluear->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
     bluear->log_count = 0;
-    bluear->scroll_offset = 0;
-    bluear->monitoring = false;
     bluear->start_time = furi_get_tick();
     bluear->connection_count = 0;
+    bluear->current_view = ScreenSplash;
     
-    bluear->notifications = furi_record_open(RECORD_NOTIFICATION);
-    
-    // Create update timer
+    // Create update timer - starts monitoring immediately
     bluear->update_timer = furi_timer_alloc(timer_tick, FuriTimerTypePeriodic, bluear);
+    furi_timer_start(bluear->update_timer, 500);
     
     // Create splash view
     bluear->view_splash = view_alloc();
     view_set_context(bluear->view_splash, bluear);
     view_set_draw_callback(bluear->view_splash, render_screen_splash);
-    view_set_input_callback(bluear->view_splash, handle_input_screen_splash);
+    view_set_input_callback(bluear->view_splash, handle_input);
     
     // Create listen view
     bluear->view_listen = view_alloc();
     view_set_context(bluear->view_listen, bluear);
     view_set_draw_callback(bluear->view_listen, render_screen_listen);
-    view_set_input_callback(bluear->view_listen, handle_input_screen_listen);
+    view_set_input_callback(bluear->view_listen, handle_input);
     
     // Create view dispatcher
     bluear->view_dispatcher = view_dispatcher_alloc();
@@ -322,12 +228,8 @@ static BluEar* bluear_create() {
     return bluear;
 }
 
-static void bluear_destroy(BluEar* bluear) { // Free BluEar
-    // Stop monitoring if active
-    if(bluear->monitoring) {
-        furi_timer_stop(bluear->update_timer);
-    }
-    
+static void bluear_destroy(BluEar* bluear) {
+    furi_timer_stop(bluear->update_timer);
     furi_timer_free(bluear->update_timer);
     view_dispatcher_remove_view(bluear->view_dispatcher, ScreenSplash);
     view_dispatcher_remove_view(bluear->view_dispatcher, ScreenListen);
@@ -335,12 +237,11 @@ static void bluear_destroy(BluEar* bluear) { // Free BluEar
     view_free(bluear->view_splash);
     view_free(bluear->view_listen);
     furi_mutex_free(bluear->mutex);
-    furi_record_close(RECORD_NOTIFICATION);
     free(bluear);
 }
 
 // =============================================================================
-// MAIN APPLICATION aka main entry point
+// MAIN APPLICATION
 // =============================================================================
 int32_t bluear_main(void* p) {
     UNUSED(p);
@@ -351,9 +252,8 @@ int32_t bluear_main(void* p) {
     view_dispatcher_attach_to_gui(
         bluear->view_dispatcher, gui, ViewDispatcherTypeFullscreen);
     
-    // Add initial log entries (for when user reaches listen screen)
+    // Add initial log entry
     log_entry(bluear, "App initialized");
-    log_entry(bluear, "Press OK to start");
     
     view_dispatcher_run(bluear->view_dispatcher);
     
