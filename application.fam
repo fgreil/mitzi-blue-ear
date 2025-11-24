@@ -1,6 +1,6 @@
 App(
      # Unique identifier used by the build system (must be unique across firmware).
-    appid="blue_ear",
+    appid="bluear",
 
     # What users will see when browsing apps
     name="BluEar",
@@ -11,8 +11,8 @@ App(
     # Application type - EXTERNAL means it's a .fap file loaded from SD card
     apptype=FlipperAppType.EXTERNAL,
     
-    # The C function that starts the app, i.a.w. the main C file must contain: int32_t blue_ear_main(void* p) { ... }
-    entry_point="blue_ear",
+    # The C function that starts the app, i.a.w. the main C file must contain: int32_t bluear_main(void* p) { ... }
+    entry_point="bluear_main",
 
     # Preprocessor definitions added during compilation
     cdefines=["APP_ID_CARD"],
